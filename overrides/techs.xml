@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="us-ascii"?>
+<TechTree version="8">
+	<Tech name="forerunner_LeaderMonitor" type="Normal">
+		<DBID>9001</DBID>
+		<ResearchPoints>0</ResearchPoints>
+		<Status>UNOBTAINABLE</Status>
+		<Flag>Shadow</Flag>
+		<Prereqs>
+			<TechStatus status="Active">Basic</TechStatus>
+		</Prereqs>
+		<Effects>
+			<Effect type="Data" amount="0" subtype="Enable" relativity="Absolute">
+				<Target type="ProtoSquad">cov_inf_grunt_01</Target>
+			</Effect>
+		</Effects>
+	</Tech>
+</TechTree>
