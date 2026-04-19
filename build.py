@@ -7,9 +7,10 @@ lxml preserves attribute order, encoding, and document structure.
 No regex, no text manipulation, no mangling.
 
 Usage:
-    python build.py              # Build to build/ModData/
-    python build.py --clean      # Wipe build/ first
-    python build.py --diff       # Show what overrides will change (dry run)
+    python build.py                         # Build to build/ModData/
+    python build.py --clean                 # Wipe build/ first
+    python build.py --diff                  # Show what overrides will change (dry run)
+    python build.py --extract path/file.xml # Extract a minimal override from a fork
 
 Requirements:
     pip install lxml
@@ -129,6 +130,103 @@ def write_xml(tree, path):
     tree.write(path, encoding=encoding, xml_declaration=True, pretty_print=False)
     print(f"  wrote {path}")
 
+# -- Extract ----------------------------------------------------------------
+
+def canonical_bytes(el):
+    """
+    Canonical byte-string for an entry, for equivalence comparison.
+    Re-parses stripping pure-whitespace text nodes so indentation differences
+    between two copies of the same entry don't register as a change, then
+    runs C14N to normalize attribute order.
+    """
+    raw = etree.tostring(el)
+    stripped = etree.fromstring(raw, etree.XMLParser(remove_blank_text=True))
+    return etree.tostring(stripped, method="c14n")
+
+
+def extract_xml(modder_path, base_path, rule):
+    """
+    Compare modder's forked file against vanilla and return a new tree
+    containing only entries that were added or modified.
+
+    NOTE: entry-level granularity only. If a modder tweaked one attribute
+    inside a large entry, the whole entry is emitted. Sub-entry diffing
+    is out of scope.
+    """
+    parser = etree.XMLParser(remove_blank_text=False, strip_cdata=False)
+    modder_tree = etree.parse(modder_path, parser)
+    base_tree = etree.parse(base_path, parser)
+
+    modder_root = modder_tree.getroot()
+    base_root = base_tree.getroot()
+
+    tag = rule["tag"]
+
+    if "parent" in rule:
+        modder_container = modder_root.find(rule["parent"])
+        base_container = base_root.find(rule["parent"])
+        if modder_container is None:
+            raise ValueError(f"modder file missing <{rule['parent']}> element")
+        if base_container is None:
+            raise ValueError(f"base file missing <{rule['parent']}> element")
+    else:
+        modder_container = modder_root
+        base_container = base_root
+
+    new_names = []
+    modified_names = []
+    unchanged = 0
+    kept = []
+
+    for mod_el in modder_container.findall(tag):
+        key_val = get_entry_key(mod_el, rule)
+        if not key_val:
+            print(f"  WARNING: {tag} element missing key, skipping")
+            continue
+
+        base_el = find_in_tree(base_container, tag, key_val, rule)
+
+        if base_el is None:
+            new_names.append(key_val)
+            kept.append(mod_el)
+        elif canonical_bytes(mod_el) != canonical_bytes(base_el):
+            modified_names.append(key_val)
+            kept.append(mod_el)
+        else:
+            unchanged += 1
+
+    # Build the output tree: mirror the modder's root (and parent container,
+    # if any), then insert only the kept entries.
+    new_root = etree.Element(
+        modder_root.tag, attrib=dict(modder_root.attrib), nsmap=modder_root.nsmap
+    )
+    if "parent" in rule:
+        src_parent = modder_container
+        container = etree.SubElement(
+            new_root, src_parent.tag, attrib=dict(src_parent.attrib)
+        )
+    else:
+        container = new_root
+
+    for entry in kept:
+        container.append(etree.fromstring(etree.tostring(entry)))
+
+    out_tree = etree.ElementTree(new_root)
+    summary = {
+        "new": new_names,
+        "modified": modified_names,
+        "unchanged": unchanged,
+        "encoding": modder_tree.docinfo.encoding or "utf-8",
+    }
+    return out_tree, summary
+
+
+def write_extract(tree, path, encoding):
+    """Write an extracted override file."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    tree.write(path, encoding=encoding, xml_declaration=True, pretty_print=True)
+    print(f"  wrote {path}")
+
 # -- Commands ---------------------------------------------------------------
 
 def do_build(clean=False):
@@ -232,15 +330,90 @@ def do_diff():
             for s in sorted(statics):
                 print(f"    {s}")
 
+def do_extract(modder_path, out_dir):
+    """
+    Extract a minimal override from a full-file fork by diffing against
+    base/<filename>. Use this to reduce someone else's forked XML to the
+    entries they actually changed.
+    """
+    if not os.path.isfile(modder_path):
+        print(f"ERROR: no such file: {modder_path}")
+        sys.exit(1)
+
+    fname = os.path.basename(modder_path)
+    base_path = os.path.join(BASE_DIR, fname)
+    out_path = os.path.join(out_dir, fname)
+
+    print(f"\n-- Extracting {fname} --")
+
+    if fname not in MERGE_RULES:
+        # No merge rule => can't diff entry-by-entry. Fall back to copying
+        # the whole file; warn the user this is a full replacement, not an
+        # actual extract.
+        print(f"  WARNING: no merge rule for {fname} - emitting full file")
+        print(f"           as a replacement override. This is not a true")
+        print(f"           extract; add a rule to MERGE_RULES for proper diffing.")
+        os.makedirs(out_dir, exist_ok=True)
+        shutil.copy2(modder_path, out_path)
+        print(f"  wrote {out_path}")
+        return
+
+    if not os.path.isfile(base_path):
+        print(f"ERROR: no vanilla base file at {base_path} to diff against")
+        sys.exit(1)
+
+    rule = MERGE_RULES[fname]
+    try:
+        tree, summary = extract_xml(modder_path, base_path, rule)
+    except Exception as e:
+        print(f"  ERROR extracting {fname}: {e}")
+        sys.exit(1)
+
+    total = len(summary["new"]) + len(summary["modified"])
+    print(f"  {total} entries extracted "
+          f"({len(summary['modified'])} modified, {len(summary['new'])} new, "
+          f"{summary['unchanged']} unchanged and dropped)")
+    for name in summary["modified"]:
+        print(f"    ~ {name}")
+    for name in summary["new"]:
+        print(f"    + {name}")
+
+    if total == 0:
+        print(f"  (nothing to extract - modder file is identical to base)")
+        return
+
+    write_extract(tree, out_path, summary["encoding"])
+
+
 # -- Main -------------------------------------------------------------------
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Forerunner Mod build script")
+    parser = argparse.ArgumentParser(
+        description="Forerunner Mod build script",
+        epilog=(
+            "Use --extract to reduce a full-file fork (e.g. a modder's "
+            "complete leaders.xml) to a minimal override containing only "
+            "the entries that differ from vanilla. Diffs at entry granularity "
+            "only - if one attribute inside an entry changed, the whole "
+            "entry is emitted."
+        ),
+    )
     parser.add_argument("--clean", action="store_true", help="Wipe build/ before building")
     parser.add_argument("--diff",  action="store_true", help="Dry run - show what would change")
+    parser.add_argument(
+        "--extract", metavar="FILE",
+        help="Extract a minimal override from a forked base file by diffing "
+             "against base/<filename>. File type is inferred from the filename.",
+    )
+    parser.add_argument(
+        "--into", metavar="DIR", default=OVERRIDES_DIR,
+        help=f"Output directory for --extract (default: {OVERRIDES_DIR}/)",
+    )
     args = parser.parse_args()
 
-    if args.diff:
+    if args.extract:
+        do_extract(args.extract, args.into)
+    elif args.diff:
         do_diff()
     else:
         do_build(clean=args.clean)
