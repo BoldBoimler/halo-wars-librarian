@@ -125,7 +125,7 @@ If you're modding HW:DE and want to help:
 ## Related
 
 - **[Cartographer](https://github.com/BoldBoimler/halo-wars-cartographer)** — desktop scenario editor for HW:DE with 2D/3D viewports, terrain rendering, and round-trip SCN/SC2 export. Edit maps visually, then use Librarian to ship the surrounding mod.
-- The [HW:DE modding Discord](https://discord.gg/haloWARS) is where most of the active community lives.
+- Most of the active HW:DE modding community lives on the **Halo Wars Hub** Discord.
 
 ---
 
