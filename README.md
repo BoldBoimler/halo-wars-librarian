@@ -97,16 +97,11 @@ That rule says: "When merging `somefile.xml`, find entries by the `<Entry>` tag 
 
 ## Deploying
 
-**Manually**, to a Steam Deck on your LAN:
+To a Steam Deck on your LAN:
 
 ```bash
 scp -r build/ModData deck@<deck-ip>:~/HaloWarsMods/<your-mod>/
 ```
-
-**Via GitHub Actions**, the workflow in `.github/workflows/build.yml` builds and validates on every push. The deploy step is `workflow_dispatch` only — trigger it manually from the Actions tab when you want to push to the Deck. You'll need to set two repository secrets:
-
-- `DECK_KEY` — the SSH private key authorized on the Deck
-- `DECK_HOST` — in `user@host` format (e.g. `deck@192.168.1.50`)
 
 ## State of things / help wanted
 
